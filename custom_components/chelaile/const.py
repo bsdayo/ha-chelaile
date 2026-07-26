@@ -74,6 +74,7 @@ DEFAULT_SCAN_INTERVAL = timedelta(seconds=30)
 # 配置流程各 step 名
 STEP_USER = "user"
 STEP_LINE = "line"
+STEP_DIRECTION = "direction"
 STEP_STOP = "stop"
 
 # Config entry 数据键

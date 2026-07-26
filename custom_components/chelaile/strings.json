@@ -9,10 +9,16 @@
         }
       },
       "line": {
-        "title": "选择线路",
-        "description": "在 {city_name} 输入要监控的线路号(如 7、368),然后选择方向。",
+        "title": "输入线路号",
+        "description": "在 {city_name} 输入要监控的线路号(如 7、368),然后点击下一步搜索。",
         "data": {
-          "line_no": "线路号",
+          "line_no": "线路号"
+        }
+      },
+      "direction": {
+        "title": "选择方向",
+        "description": "线路号 {line_no} 有多个方向,请选择要监控的方向。",
+        "data": {
           "line_id": "方向"
         }
       },
@@ -31,6 +37,7 @@
       "select_city": "请选择一个城市。",
       "line_no_required": "请输入线路号。",
       "line_not_found": "未找到该线路号的公交线路,请检查线路号。",
+      "select_direction": "请选择一个方向。",
       "no_stations": "该线路未返回站点列表。",
       "select_station": "请选择一个站点。"
     },
