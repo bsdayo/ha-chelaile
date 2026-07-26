@@ -1,0 +1,7 @@
+# 运行时依赖:
+# - pycryptodome: AES-256-ECB 解密(Home Assistant 官方容器已内置)
+# - aiohttp: HTTP 客户端(HA 已内置)
+# - voluptuous: 配置校验(HA 已内置)
+#
+# 仅在非官方 HA 环境或缺失 pycryptodome 时需要手动安装:
+# pip install pycryptodome>=3.0.0
