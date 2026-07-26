@@ -68,8 +68,8 @@ STATUS_DEPRECATED = "12009"
 # 此值仅作为 config flow 下拉默认选中,用户仍可选全部 477 个城市。
 DEFAULT_CITY_ID = "251"  # 茂名
 
-# 轮询间隔(秒)。城市 maxInterval 通常 30s,初版固定 30s
-DEFAULT_SCAN_INTERVAL = timedelta(seconds=30)
+# 轮询间隔 (秒)。城市 maxInterval 通常 30s，新配置推荐 60s
+DEFAULT_SCAN_INTERVAL = timedelta(seconds=60)
 
 # 配置流程各 step 名
 STEP_USER = "user"

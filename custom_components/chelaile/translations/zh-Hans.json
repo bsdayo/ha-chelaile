@@ -3,56 +3,85 @@
     "step": {
       "user": {
         "title": "车来了实时公交",
-        "description": "选择你所在的城市(共 {city_count} 个可选)。",
+        "description": "选择你所在的城市 (共 {city_count} 个可选)。",
         "data": {
           "city_id": "城市"
         }
       },
       "line": {
         "title": "输入线路号",
-        "description": "在 {city_name} 输入要监控的线路号(如 7、368),然后点击下一步搜索。",
+        "description": "在 {city_name} 输入要监控的线路号 (如 7、368),然后点击下一步搜索。",
         "data": {
           "line_no": "线路号"
         }
       },
       "direction": {
         "title": "选择方向",
-        "description": "线路号 {line_no} 有多个方向,请选择要监控的方向。",
+        "description": "线路号 {line_no} 有多个方向，请选择要监控的方向。",
         "data": {
           "line_id": "方向"
         }
       },
       "stop": {
         "title": "选择站点",
-        "description": "线路 {line_name}(方向 {direction})经过的站点,选择你要监控到站时间的站点。",
+        "description": "线路 {line_name}(方向 {direction}) 经过的站点，选择你要监控到站时间的站点。",
         "data": {
           "station_id": "站点"
         }
+      },
+      "reauth": {
+        "title": "需要重新认证",
+        "description": "客户端指纹已失效，请重新配置集成。"
       }
     },
     "error": {
-      "cannot_connect": "无法连接车来了服务,请稍后重试。",
-      "unknown": "未知错误,请查看日志。",
-      "auth_failed": "客户端指纹失效,可能需要升级集成。",
+      "cannot_connect": "无法连接车来了服务，请稍后重试。",
+      "unknown": "未知错误，请查看日志。",
+      "auth_failed": "客户端指纹失效，可能需要升级集成。",
       "select_city": "请选择一个城市。",
       "line_no_required": "请输入线路号。",
-      "line_not_found": "未找到该线路号的公交线路,请检查线路号。",
+      "line_not_found": "未找到该线路号的公交线路，请检查线路号。",
       "select_direction": "请选择一个方向。",
       "no_stations": "该线路未返回站点列表。",
       "select_station": "请选择一个站点。"
     },
     "abort": {
-      "already_configured": "该线路站点已配置。"
+      "already_configured": "该线路站点已配置。",
+      "reauth_complete": "重新认证成功，请重新配置。"
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "车来了选项",
-        "description": "调整轮询间隔(秒)。",
+        "description": "调整轮询间隔 (秒)。推荐 30-300 秒，太短可能被 API 限制。",
         "data": {
-          "scan_interval": "轮询间隔(秒,10-600)"
+          "scan_interval": "轮询间隔 (秒，10-900)"
         }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "arrived_bus_0": {
+        "name": "第 1 辆车已到达"
+      },
+      "arrived_bus_1": {
+        "name": "第 2 辆车已到达"
+      },
+      "arrived_bus_2": {
+        "name": "第 3 辆车已到达"
+      }
+    },
+    "sensor": {
+      "bus_0": {
+        "name": "第 1 辆车到站时间"
+      },
+      "bus_1": {
+        "name": "第 2 辆车详情"
+      },
+      "bus_2": {
+        "name": "第 3 辆车详情"
       }
     }
   }

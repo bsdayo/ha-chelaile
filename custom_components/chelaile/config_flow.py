@@ -352,13 +352,18 @@ class ChelaileOptionsFlow(config_entries.OptionsFlow):
         current = self.config_entry.options.get(
             CONF_SCAN_INTERVAL, int(DEFAULT_SCAN_INTERVAL.total_seconds())
         )
+        
+        # 显示建议值
+        description = "调整轮询间隔 (秒)。推荐 30-300 秒，太短可能被 API 限制。"
+        
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
                     vol.Optional(CONF_SCAN_INTERVAL, default=int(current)): vol.All(
-                        vol.Coerce(int), vol.Range(min=10, max=600)
+                        vol.Coerce(int), vol.Range(min=10, max=900)
                     ),
                 }
             ),
+            description=description,
         )

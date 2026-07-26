@@ -10,11 +10,25 @@
 
 ## 功能
 
-- 🚌 实时到站时间(分钟数)作为 sensor 状态
-- 📍 显示最近一辆车的:到站分钟、到达时间、距离(米)、还有几站、拥挤度、车牌
-- 🚏 同时展示后续 2 辆车的到站信息
-- ⏱️ 可配置轮询间隔(默认 30 秒)
-- 🗺️ 配置流程:选城市 → 输线路号 → 选方向 → 选站点(全程下拉,无需手动抓 ID)
+✨ **核心功能**
+- 🚌 **多车实时显示**: 同时监控最近 3 辆公交车的到站信息
+- ⏱️ **智能到站时间**: 第 1 辆车显示分钟数，第 2-3 辆车显示详细字符串
+- 🎯 **已到达检测**: binary_sensor 实时检测公交是否已到达 (≤1 分钟)
+- ⚙️ **可配置轮询**: 支持 10-900 秒间隔，推荐 30-300 秒
+- 🔄 **手动刷新服务**: 支持调用服务立即刷新数据
+- 🗺️ **友好配置**: 选城市 → 输线路号 → 选方向 → 选站点 (全程下拉选择)
+
+📊 **数据展示**
+| 实体类型 | 说明 |
+|----------|------|
+| `sensor.*_第 1 辆车` | 最近一辆车到站分钟数 (适合 Lovelace 卡片) |
+| `sensor.*_第 2/3 辆车` | 后续车辆的详细字符串 (如 "约 5 分钟，还有 3 站，约 450 米") |
+| `binary_sensor.*_已到达` | 当车辆 ≤1 分钟时触发 True |
+
+💡 **使用提示**
+- 主面板建议只显示「第 1 辆车」传感器状态
+- 可以创建自动化：当 `binary_sensor` 为 ON 时发送通知
+- 支持在设置中调整轮询频率
 
 ## 安装
 
@@ -38,42 +52,131 @@
 5. 选择要监控的站点
 6. 完成
 
-如需调整轮询间隔,在集成卡片上点「配置」即可(10–600 秒)。
+如需调整轮询间隔，在集成卡片上点「配置」即可 (10–900 秒)。
+
+### 刷新服务
+
+通过以下服务手动刷新数据:
+```yaml
+# 刷新所有集成
+service: chelaile.refresh
+
+# 或按 entry_id 刷新特定线路 (需要知道 entry_id)
+# service: chelaile.refresh
+# data:
+#   entry_id: xxxxxx
+```
 
 ## 实体说明
 
-每个 (线路, 站点) 配置生成一个 sensor:
+每个 (线路，站点) 配置生成 **6 个实体**:
 
-| 属性 | 说明 |
-|------|------|
-| 状态 | 最近一辆车到站分钟数(向上取整,无车时为 `unknown`) |
-| `line_name` | 线路名 |
-| `direction` | 方向 |
-| `station_name` | 站点名 |
-| `city_name` | 城市 |
-| `next_bus_eta_min` | 最近车到站分钟 |
-| `next_bus_arrival_time` | 最近车预计到达时间(ISO) |
-| `next_bus_stops_away` | 最近车还有几站 |
-| `next_bus_distance_m` | 最近车距站点距离(米) |
-| `next_bus_capacity` | 最近车拥挤度(空/中/挤) |
-| `next_bus_licence` | 最近车牌号 |
-| `following_buses` | 后续车辆列表(ETA/距离/站数/拥挤度/车牌) |
-| `last_updated` | 最后更新时间 |
+### Sensors (传感器)
+
+| 实体名称 | 状态类型 | 说明 |
+|----------|----------|------|
+| `sensor.线路 站点 第 1 辆车` | number | 最近一辆车到站分钟数 |
+| `sensor.线路 站点 第 2 辆车` | string | "约 5 分钟，还有 3 站" |
+| `sensor.线路 站点 第 3 辆车` | string | "约 8 分钟，还有 5 站" |
+
+### Binary Sensors (二元传感器)
+
+| 实体名称 | 状态 | 说明 |
+|----------|------|------|
+| `binary_sensor.线路 站点 第 1 辆车到站` | on/off | travel_time ≤ 60 秒时为 on |
+| `binary_sensor.线路 站点 第 2 辆车到站` | on/off | 同上 |
+| `binary_sensor.线路 站点 第 3 辆车到站` | on/off | 同上 |
+
+### Attributes (属性)
+
+**Sensor 通用属性**:
+```yaml
+vehicle_index: 0              # 车辆索引 (0,1,2)
+is_first_bus: true            # 是否第一辆车
+line_name: "7 路"
+direction: "上行"
+station_name: "市一中"
+city_name: "茂名"
+last_updated: "2026-07-26T..."
+et a_minutes: 5               # 到站分钟数
+arrival_time: "2026-07-26T..."
+stops_away: 3                 # 还有几站
+distance_m: 450               # 距离 (米)
+capacity: "空"                # 拥挤度
+licence: "粤 X·12345"         # 车牌
+speed_kmh: 25                 # 速度 (km/h)
+order: 15                     # 当前站序
+```
+
+**Binary Sensor 属性**:
+```yaml
+travel_time_seconds: 45       # 剩余行驶时间 (秒)
+stops_away: 0                 # 还有几站
+distance_m: 50                # 距离 (米)
+arrival_time: "..."           # 预计到达时间
+```
 
 ## 自动化示例
 
+### 1. 公交快到站通知
+
 ```yaml
-# 公交快到站时通知(还有 3 分钟)
 automation:
-  - alias: 公交快到站提醒
+  - alias: 公交快到了提醒
     trigger:
       - platform: numeric_state
-        entity_id: sensor.bus_7_市一中_到站
+        entity_id: sensor.bus_7_市一中_第 1 辆车
         below: 3
     action:
       - service: notify.mobile_app_your_phone
         data:
-          message: "7路公交还有 {{ trigger.to_state.state }} 分钟到达市一中!"
+          message: "7 路公交还有 {{ trigger.to_state.state }} 分钟到达市一中!"
+```
+
+### 2. 已到达推送 (更及时)
+
+```yaml
+automation:
+  - alias: 公交已到达
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.bus_7_市一中_第 1 辆车到站
+        to: 'on'
+    action:
+      - service: notify.mobile_app_your_phone
+        data:
+          message: "🚌 7 路公交已到达市一中站！"
+```
+
+### 3. 综合信息卡片 (Lovelace)
+
+```yaml
+type: custom:glance-card
+title: 7 路公交
+entities:
+  - entity: sensor.bus_7_市一中_第 1 辆车
+    name: 第 1 辆车
+  - entity: sensor.bus_7_市一中_第 2 辆车
+    name: 第 2 辆车
+  - entity: binary_sensor.bus_7_市一中_第 1 辆车到站
+    icon: 'mdi:bus'
+    state_color: true
+    states:
+      - 'on':
+          icon: 'mdi:bus-alert'
+          color: green
+```
+
+### 4. 定时自动刷新
+
+```yaml
+automation:
+  - alias: 每分钟自动刷新公交数据
+    trigger:
+      platform: timepattern
+      minutes: '/1'
+    action:
+      - service: chelaile.refresh
 ```
 
 ## 技术实现

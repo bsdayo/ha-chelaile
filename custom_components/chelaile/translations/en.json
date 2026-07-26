@@ -1,0 +1,88 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Chelaile Real-time Bus",
+        "description": "Select your city (from {city_count} available).",
+        "data": {
+          "city_id": "City"
+        }
+      },
+      "line": {
+        "title": "Enter Route Number",
+        "description": "In {city_name}, enter the route number (e.g., 7, 368), then click Next to search.",
+        "data": {
+          "line_no": "Route Number"
+        }
+      },
+      "direction": {
+        "title": "Select Direction",
+        "description": "Route {line_no} has multiple directions. Please select the one you want to monitor.",
+        "data": {
+          "line_id": "Direction"
+        }
+      },
+      "stop": {
+        "title": "Select Station",
+        "description": "Stations served by {line_name} (direction {direction}). Select the station to monitor arrival times.",
+        "data": {
+          "station_id": "Station"
+        }
+      },
+      "reauth": {
+        "title": "Re-authentication Required",
+        "description": "The client fingerprint has expired. Please reconfigure the integration."
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to Chelaile service. Please try again later.",
+      "unknown": "Unknown error. Check logs for details.",
+      "auth_failed": "Client fingerprint invalid. May require updating the integration.",
+      "select_city": "Please select a city.",
+      "line_no_required": "Please enter a route number.",
+      "line_not_found": "No bus route found for this number. Please check and try again.",
+      "select_direction": "Please select a direction.",
+      "no_stations": "No stations returned for this route.",
+      "select_station": "Please select a station."
+    },
+    "abort": {
+      "already_configured": "This route and station are already configured.",
+      "reauth_complete": "Re-authentication complete. Please re-configure."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Chelaile Options",
+        "description": "Adjust polling interval (seconds). Recommended: 30-300 seconds.",
+        "data": {
+          "scan_interval": "Polling interval (seconds, 10-900)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "arrived_bus_0": {
+        "name": "Bus 1 Arrived"
+      },
+      "arrived_bus_1": {
+        "name": "Bus 2 Arrived"
+      },
+      "arrived_bus_2": {
+        "name": "Bus 3 Arrived"
+      }
+    },
+    "sensor": {
+      "bus_0": {
+        "name": "Bus 1 ETA"
+      },
+      "bus_1": {
+        "name": "Bus 2 Details"
+      },
+      "bus_2": {
+        "name": "Bus 3 Details"
+      }
+    }
+  }
+}
