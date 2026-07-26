@@ -9,7 +9,6 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -58,6 +57,7 @@ class ChelaileDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER,
             name=DOMAIN,
             update_interval=update_interval,
+            config_entry=entry,
         )
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -72,8 +72,8 @@ class ChelaileDataUpdateCoordinator(DataUpdateCoordinator):
                 lng=self.lng,
             )
         except ChelaileAuthError as err:
-            # 签名/版本失效,需用户重新配置或集成升级
-            raise ConfigEntryAuthFailed(str(err)) from err
+            # 签名/版本失效，需用户重新配置或集成升级
+            raise UpdateFailed(str(err)) from err
         except ChelaileError as err:
             raise UpdateFailed(str(err)) from err
 

@@ -12,6 +12,7 @@ import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import ChelaileApiClient
 from .const import CONF_CITY_ID, DEFAULT_SCAN_INTERVAL, DOMAIN
@@ -26,10 +27,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """设置 config entry:创建 API 客户端 + 协调器,转发到平台。"""
     hass.data.setdefault(DOMAIN, {})
 
-    # 用 HA 管理的 aiohttp session
-    session = aiohttp.ClientSession()
+    # 使用 HA 管理的 aiohttp session
     api = ChelaileApiClient(
-        session=session,
+        session=async_get_clientsession(hass),
         city_id=entry.data[CONF_CITY_ID],
     )
 
@@ -39,7 +39,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = {
         "api": api,
         "coordinator": coordinator,
-        "session": session,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -54,10 +53,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """卸载 config entry。"""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        data = hass.data[DOMAIN].pop(entry.entry_id, {})
-        session: aiohttp.ClientSession | None = data.get("session")
-        if session and not session.closed:
-            await session.close()
+        hass.data[DOMAIN].pop(entry.entry_id, None)
     return unload_ok
 
 

@@ -12,9 +12,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import aiohttp
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigEntry, ConfigFlowResult
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 
@@ -49,17 +49,19 @@ _LOGGER = logging.getLogger(__name__)
 
 async def _get_api(hass: HomeAssistant) -> ChelaileApiClient:
     """构造一个临时 API 客户端(config_flow 期间短生命周期,独立 session)。"""
-    session = aiohttp.ClientSession()
+    from homeassistant.helpers.aiohttp_client import async_get_clientsession
+    
+    session = async_get_clientsession(hass)
     return ChelaileApiClient(session)
 
 
 async def _validate_get_cities(hass: HomeAssistant) -> list[dict[str, Any]]:
-    """获取城市列表,返回 [{cityId, cityName, ...}]。失败抛异常。"""
+    """获取城市列表，返回 [{cityId, cityName, ...}]。失败抛异常。"""
     api = await _get_api(hass)
     try:
         return await api.async_get_cities()
     finally:
-        await api._session.close()
+        pass  # HA 自动管理 session
 
 
 async def _validate_search_lines(
@@ -69,7 +71,7 @@ async def _validate_search_lines(
     try:
         return await api.async_search_lines(city_id, keyword)
     finally:
-        await api._session.close()
+        pass  # HA 自动管理 session
 
 
 async def _validate_get_line_stations(
@@ -79,7 +81,7 @@ async def _validate_get_line_stations(
     try:
         return await api.async_get_line_stations(city_id, line_id)
     finally:
-        await api._session.close()
+        pass  # HA 自动管理 session
 
 
 def _city_options(cities: list[dict[str, Any]]) -> dict[str, str]:
@@ -105,12 +107,13 @@ class ChelaileConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._selected_city_name: str = ""
         self._line_no: str = ""
         self._selected_line: dict[str, Any] = {}
+        self._entry_data: dict[str, Any] = {}
 
-    # ---------- 第1步:选城市 ----------
-
+    # ---------- 第 1 步：选城市 ----------
+    
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """选城市。"""
         errors: dict[str, str] = {}
 
@@ -160,7 +163,7 @@ class ChelaileConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_line(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """输入线路号,搜索后跳到方向选择。"""
         errors: dict[str, str] = {}
 
@@ -182,6 +185,7 @@ class ChelaileConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors[CONF_LINE_NO] = "line_not_found"
                 except ChelaileAuthError:
                     errors["base"] = "auth_failed"
+                    # 需要用户重新配置
                 except ChelaileError as err:
                     _LOGGER.error("搜索线路失败: %s", err)
                     errors["base"] = "cannot_connect"
@@ -204,7 +208,7 @@ class ChelaileConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_direction(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """选择线路方向(上/下行)。"""
         errors: dict[str, str] = {}
 
@@ -239,7 +243,7 @@ class ChelaileConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     # ---------- 第4步:选站点 ----------
 
-    async def _go_to_stop(self, line: dict[str, Any]) -> FlowResult:
+    async def _go_to_stop(self, line: dict[str, Any]) -> ConfigFlowResult:
         """记录选中线路,拉取站点,进入站点选择步。"""
         self._selected_line = line
         try:
@@ -261,7 +265,7 @@ class ChelaileConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_stop(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """选目标站点,然后创建 entry。"""
         errors: dict[str, str] = {}
 
@@ -323,18 +327,24 @@ class ChelaileConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> "ChelaileOptionsFlow":
         """返回 options flow。"""
-        return ChelaileOptionsFlow(config_entry)
+        return ChelaileOptionsFlow()
+
+    async def async_step_reauth(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """重配流程：遇到版本无效时让用户重新选择城市/线路。"""
+        if user_input is not None:
+            pass
+        # 直接跳到城市选择步
+        return await self.async_step_user(user_input)
 
 
 class ChelaileOptionsFlow(config_entries.OptionsFlow):
-    """选项流:可调轮询间隔。"""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+    """选项流：可调轮询间隔。"""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """管理选项。"""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)

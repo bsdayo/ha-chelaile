@@ -7,5 +7,5 @@
   "codeowners": ["@2107596808"],
   "config_flow": true,
   "iot_class": "cloud_polling",
-  "requirements": []
+  "requirements": ["pycryptodome>=3.20.0"]
 }
