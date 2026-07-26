@@ -1,5 +1,9 @@
 # 车来了实时公交 - Home Assistant 集成
 
+<p align="center">
+  <img src="icon.png" width="128" alt="车来了实时公交集成图标" />
+</p>
+
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
 基于[车来了](https://web.chelaile.net.cn)微信小程序接口的 Home Assistant 自定义集成,实时监控指定公交线路在指定站点的到站时间。
