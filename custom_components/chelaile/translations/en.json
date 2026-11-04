@@ -57,11 +57,6 @@
       "eta": {
         "name": "Bus {position} arrival time"
       }
-    },
-    "binary_sensor": {
-      "arriving": {
-        "name": "Arriving soon"
-      }
     }
   }
 }

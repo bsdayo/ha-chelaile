@@ -57,11 +57,6 @@
       "eta": {
         "name": "第 {position} 辆车到站时间"
       }
-    },
-    "binary_sensor": {
-      "arriving": {
-        "name": "即将到站"
-      }
     }
   }
 }
