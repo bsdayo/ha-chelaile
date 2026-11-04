@@ -2,86 +2,64 @@
   "config": {
     "step": {
       "user": {
-        "title": "Chelaile Real-time Bus",
-        "description": "Select your city (from {city_count} available).",
+        "title": "Chelaile",
+        "description": "Search for and select your city.",
         "data": {
           "city_id": "City"
         }
       },
       "line": {
-        "title": "Enter Route Number",
-        "description": "In {city_name}, enter the route number (e.g., 7, 368), then click Next to search.",
+        "title": "Search for a route",
+        "description": "Enter a bus route number in {city_name}.",
         "data": {
-          "line_no": "Route Number"
+          "line_no": "Route number"
         }
       },
       "direction": {
-        "title": "Select Direction",
-        "description": "Route {line_no} has multiple directions. Please select the one you want to monitor.",
+        "title": "Select a direction",
         "data": {
           "line_id": "Direction"
         }
       },
       "stop": {
-        "title": "Select Station",
-        "description": "Stations served by {line_name} (direction {direction}). Select the station to monitor arrival times.",
+        "title": "Select a stop",
+        "description": "Choose a stop on {line_name}.",
         "data": {
-          "station_id": "Station"
+          "station_id": "Stop"
         }
-      },
-      "reauth": {
-        "title": "Re-authentication Required",
-        "description": "The client fingerprint has expired. Please reconfigure the integration."
       }
     },
     "error": {
-      "cannot_connect": "Unable to connect to Chelaile service. Please try again later.",
-      "unknown": "Unknown error. Check logs for details.",
-      "auth_failed": "Client fingerprint invalid. May require updating the integration.",
-      "select_city": "Please select a city.",
-      "line_no_required": "Please enter a route number.",
-      "line_not_found": "No bus route found for this number. Please check and try again.",
-      "select_direction": "Please select a direction.",
-      "no_stations": "No stations returned for this route.",
-      "select_station": "Please select a station."
+      "cannot_connect": "Unable to connect to Chelaile. Try again.",
+      "no_cities": "No cities were returned. Try again.",
+      "line_no_required": "Enter a route number.",
+      "line_not_found": "No matching route was found.",
+      "no_stations": "No stops were returned for this route. Try again."
     },
     "abort": {
-      "already_configured": "This route and station are already configured.",
-      "reauth_complete": "Re-authentication complete. Please re-configure."
+      "already_configured": "This route and stop are already configured."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Chelaile Options",
-        "description": "Adjust polling interval (seconds). Recommended: 30-300 seconds.",
+        "title": "Polling interval",
+        "description": "Choose an interval from 30 to 900 seconds. The default is 60 seconds.",
         "data": {
-          "scan_interval": "Polling interval (seconds, 10-900)"
+          "scan_interval": "Polling interval (seconds)"
         }
       }
     }
   },
   "entity": {
-    "binary_sensor": {
-      "arrived_bus_0": {
-        "name": "Bus 1 Arrived"
-      },
-      "arrived_bus_1": {
-        "name": "Bus 2 Arrived"
-      },
-      "arrived_bus_2": {
-        "name": "Bus 3 Arrived"
+    "sensor": {
+      "eta": {
+        "name": "Bus {position} arrival time"
       }
     },
-    "sensor": {
-      "bus_0": {
-        "name": "Bus 1 ETA"
-      },
-      "bus_1": {
-        "name": "Bus 2 Details"
-      },
-      "bus_2": {
-        "name": "Bus 3 Details"
+    "binary_sensor": {
+      "arriving": {
+        "name": "Arriving soon"
       }
     }
   }

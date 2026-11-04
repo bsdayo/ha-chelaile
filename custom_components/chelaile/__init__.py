@@ -1,70 +1,26 @@
-"""车来了 (chelaile) 实时公交 Home Assistant 集成.
+"""车来了实时公交到站信息集成。"""
 
-数据源：https://web.chelaile.net.cn 微信小程序 API
-
-支持功能：
-- 显示多辆公交车的到站时间
-- 检测公交车是否已到达（binary_sensor）
-- 提供手动刷新服务
-"""
-
-from __future__ import annotations
-
-import logging
-from typing import Any
-
-import aiohttp
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_SCAN_INTERVAL, Platform
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import ChelaileApiClient
-from .const import CONF_CITY_ID, DEFAULT_SCAN_INTERVAL, DOMAIN
-from .coordinator import ChelaileDataUpdateCoordinator
+from .coordinator import ChelaileConfigEntry, ChelaileCoordinator
 
-_LOGGER = logging.getLogger(__name__)
-
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
-
-# 服务常量
-SERVICE_REFRESH = "refresh"
+PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """设置 config entry:创建 API 客户端 + 协调器，转发到平台。"""
-    hass.data.setdefault(DOMAIN, {})
-
-    # 使用 HA 管理的 aiohttp session
-    api = ChelaileApiClient(
-        session=async_get_clientsession(hass),
-        city_id=entry.data[CONF_CITY_ID],
+async def async_setup_entry(hass: HomeAssistant, entry: ChelaileConfigEntry) -> bool:
+    """初始化指定线路和站点。"""
+    coordinator = ChelaileCoordinator(
+        hass, entry, ChelaileApiClient(async_get_clientsession(hass))
     )
-
-    coordinator = ChelaileDataUpdateCoordinator(hass, api, entry)
     await coordinator.async_config_entry_first_refresh()
-
-    hass.data[DOMAIN][entry.entry_id] = {
-        "api": api,
-        "coordinator": coordinator,
-    }
-
+    entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    # options 更新时重新加载
-    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
-
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """卸载 config entry。"""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-    return unload_ok
-
-
-async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """options 变更后重载 entry。"""
-    await hass.config_entries.async_reload(entry.entry_id)
+async def async_unload_entry(hass: HomeAssistant, entry: ChelaileConfigEntry) -> bool:
+    """卸载实体及其协调器监听。"""
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

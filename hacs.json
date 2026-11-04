@@ -1,8 +1,6 @@
 {
   "name": "车来了实时公交",
-  "content_in_root": false,
-  "render_readme": true,
-  "country": ["CN"],
-  "description": "实时监控公交到站时间，支持多车显示和到达检测",
-  "homeassistant": "2024.1.0"
+  "country": "CN",
+  "homeassistant": "2026.10.4",
+  "render_readme": true
 }

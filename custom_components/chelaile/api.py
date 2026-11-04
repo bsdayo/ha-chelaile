@@ -1,24 +1,17 @@
-"""车来了(chelaile) API 客户端.
-
-移植自 chelaile-API/bus_service.py,改为 async + aiohttp 风格,
-用于 Home Assistant 集成。
-
-技术要点:
-- 签名: md5('"k"="v"&"k"="v"...' + "qwihrnbtmj"),参数顺序敏感
-- 解密: AES-256-ECB,PKCS7,key=FF32AE65FBFD19414EAAFF6291A54B42
-- 必需 headers: 微信小程序 UA + Referer
-"""
+"""车来了小程序接口的异步客户端。"""
 
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
-import logging
-from typing import Any
+import math
+from datetime import UTC, datetime
+from typing import Any, TypedDict
 
 import aiohttp
-from Crypto.Cipher import AES
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from .const import (
     AES_KEY,
@@ -29,177 +22,120 @@ from .const import (
     EP_BUS_DETAIL,
     EP_LINE_DETAIL,
     EP_SEARCH_LINES,
-    EP_STOP_DETAIL,
     SIGN_SALT,
-    STATUS_DEPRECATED,
     STATUS_OK,
 )
-from .exceptions import (
-    ChelaileApiError,
-    ChelaileAuthError,
-    ChelaileError,
-    ChelaileNotFoundError,
-)
 
-_LOGGER = logging.getLogger(__name__)
+
+class ChelaileError(Exception):
+    """上游请求失败或响应异常。"""
+
+
+class ChelaileNotFoundError(ChelaileError):
+    """未找到匹配的城市、线路或站点。"""
+
+
+class Bus(TypedDict):
+    """一辆驶向目标站点的公交车的标准化到站信息。"""
+
+    bus_id: str | None
+    license_plate: str | None
+    speed_kmh: float | None
+    order: int | None
+    travel_time_seconds: int | None
+    eta_minutes: int | None
+    arrival_time: str | None
+    distance_m: float
+    stops_away: int | None
+    capacity: str | None
 
 
 def crypto_sign(params: dict[str, str]) -> str:
-    """计算 cryptoSign: '"k"="v"&...' 拼接后追加 salt,再 md5。
-
-    参数顺序敏感,必须保留 dict 插入顺序。
-    """
-    sign_str = "&".join(f'"{k}"="{v}"' for k, v in params.items()) + SIGN_SALT
-    return hashlib.md5(sign_str.encode("utf-8")).hexdigest()
-
-
-def extract_json(raw: str) -> dict[str, Any]:
-    """从可能带前导垃圾的响应中提取首个完整 JSON 对象(大括号配平)。"""
-    start = raw.find("{")
-    if start < 0:
-        raise ChelaileError(f"upstream response is not JSON: {raw[:100]!r}")
-    depth = 0
-    in_str = False
-    escape = False
-    for i in range(start, len(raw)):
-        ch = raw[i]
-        if in_str:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return json.loads(raw[start : i + 1])
-    raise ChelaileError("upstream response JSON is truncated")
+    """按接口要求，以参数插入顺序计算签名。"""
+    value = "&".join(f'"{key}"="{value}"' for key, value in params.items())
+    return hashlib.md5((value + SIGN_SALT).encode(), usedforsecurity=False).hexdigest()
 
 
 def decrypt_result(ciphertext: str) -> str:
-    """AES-256-ECB 解密 base64 密文,去除 PKCS7 填充,返回 UTF-8 字符串。"""
-    cipher = AES.new(AES_KEY, AES.MODE_ECB)
-    plain = cipher.decrypt(base64.b64decode(ciphertext))
-    pad = plain[-1]
-    # PKCS7 填充值即末尾字节数,1~16
-    if pad < 1 or pad > 16:
-        # 兜底:可能不是标准填充,直接尝试解码
-        return plain.rstrip(b"\x00").decode("utf-8", errors="ignore")
-    return plain[:-pad].decode("utf-8")
+    """解密上游 AES-256-ECB 响应，并校验 PKCS7 填充。"""
+    decryptor = Cipher(algorithms.AES(AES_KEY), modes.ECB()).decryptor()
+    plaintext = decryptor.update(base64.b64decode(ciphertext, validate=True))
+    plaintext += decryptor.finalize()
+    unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+    return (unpadder.update(plaintext) + unpadder.finalize()).decode()
+
+
+def _number(value: Any) -> float | None:
+    """转换上游可选数值，缺失或无效时返回 None。"""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 class ChelaileApiClient:
-    """车来了 API 异步客户端。"""
+    """使用 Home Assistant 共享的 HTTP 会话查询车来了。"""
 
-    def __init__(
-        self,
-        session: aiohttp.ClientSession,
-        city_id: str = "",
-    ) -> None:
+    def __init__(self, session: aiohttp.ClientSession) -> None:
         self._session = session
-        self.city_id = city_id
 
-    # ---------- 底层请求 ----------
-
-    async def _request(
-        self,
-        endpoint: str,
-        extra: dict[str, str] | None = None,
-        url: str | None = None,
+    async def _get_json(
+        self, url: str, extra: dict[str, str] | None = None
     ) -> dict[str, Any]:
-        """发起签名+加密 GET 请求,返回解密后的 data dict。
-
-        Args:
-            endpoint: 相对 API_BASE 的端点(如 "query!nSearch.action")
-            extra: 业务参数(会合并到 DEFAULT_PARAMS 之后再签名)
-            url: 完整 URL(用于城市列表等非 /api/bus/ 端点)
-        """
-        # 合并:DEFAULT_PARAMS 先,业务参数后(顺序敏感)
-        params: dict[str, str] = dict(DEFAULT_PARAMS)
-        if self.city_id:
-            params["cityId"] = self.city_id
-            params["localCityId"] = self.city_id
-        if extra:
-            params.update(extra)
-
+        params = {**DEFAULT_PARAMS, **(extra or {})}
         params["cryptoSign"] = crypto_sign(params)
-
-        target = url or (API_BASE + endpoint)
-        _LOGGER.debug("GET %s params=%s", target, {k: v for k, v in params.items() if k != "cryptoSign"})
-
         try:
             async with self._session.get(
-                target,
+                url,
                 params=params,
                 headers=DEFAULT_HEADERS,
                 timeout=aiohttp.ClientTimeout(total=20),
-            ) as resp:
-                text = await resp.text()
-        except aiohttp.ClientError as err:
-            raise ChelaileError(f"request failed: {err}") from err
-
-        envelope = extract_json(text)
-        jsonr = envelope.get("jsonr", {})
-        status = jsonr.get("status")
-
-        if status == STATUS_DEPRECATED:
-            raise ChelaileAuthError(
-                status,
-                jsonr.get("errmsg", "该版本已不提供服务,需升级客户端指纹"),
-            )
-        if status not in STATUS_OK and status is not None:
-            raise ChelaileApiError(status, jsonr.get("errmsg", ""))
-
-        data = jsonr.get("data") or {}
-        if isinstance(data, dict) and data.get("encryptResult"):
-            decrypted = decrypt_result(data["encryptResult"])
-            _LOGGER.debug("decrypted: %s", decrypted[:300])
-            return json.loads(decrypted)
+            ) as response:
+                response.raise_for_status()
+                text = await response.text()
+            # 响应的 JSON 对象前后可能包含其他文本。
+            data, _ = json.JSONDecoder().raw_decode(text, text.index("{"))
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            raise ChelaileError(f"Request failed: {err}") from err
         return data
 
-    # ---------- 高层方法 ----------
+    async def _request(self, endpoint: str, extra: dict[str, str]) -> dict[str, Any]:
+        envelope = await self._get_json(API_BASE + endpoint, extra)
+        try:
+            response = envelope["jsonr"]
+            status = str(response["status"])
+            if status not in STATUS_OK:
+                raise ChelaileError(
+                    f"Upstream status {status}: {response.get('errmsg', '')}"
+                )
+            data = response["data"]
+            if "encryptResult" in data:
+                data = json.loads(decrypt_result(data["encryptResult"]))
+            if not isinstance(data, dict):
+                raise ValueError("Expected a response object")
+        except (KeyError, TypeError, ValueError) as err:
+            raise ChelaileError(f"Invalid response: {err}") from err
+        return data
 
     async def async_get_cities(self) -> list[dict[str, Any]]:
-        """获取城市列表(明文端点,响应结构为 {"data":{"cityList":[...]}})。
-
-        该端点不走标准 jsonr 信封,也不加密,需单独处理。
-        返回 [{cityId, cityName, pinyin, isHot, ...}]。
-        """
-        # 城市列表无需签名,但仍带默认参数与指纹 headers
-        params: dict[str, str] = dict(DEFAULT_PARAMS)
-        params["cryptoSign"] = crypto_sign(params)
-        try:
-            async with self._session.get(
-                CITY_LIST_URL,
-                params=params,
-                headers=DEFAULT_HEADERS,
-                timeout=aiohttp.ClientTimeout(total=20),
-            ) as resp:
-                text = await resp.text()
-        except aiohttp.ClientError as err:
-            raise ChelaileError(f"request failed: {err}") from err
-
-        envelope = extract_json(text)
-        # 兼容两种结构: {"data":{"cityList":[...]}} 或直接 {"cityList":[...]}
+        """获取上游服务支持的城市列表。"""
+        envelope = await self._get_json(CITY_LIST_URL)
         data = envelope.get("data") or envelope
-        city_list = data.get("cityList") or []
-        return city_list
+        if not isinstance(data, dict) or not isinstance(data.get("cityList"), list):
+            raise ChelaileError("Invalid city list")
+        cities = data["cityList"]
+        if not cities:
+            raise ChelaileNotFoundError("No cities found")
+        return cities
 
     async def async_search_lines(
         self, city_id: str, keyword: str
     ) -> list[dict[str, Any]]:
-        """按线路号搜索线路,返回各方向。
-
-        过滤掉地铁线路(subwayV2==1)。每条增加 caption 字段方便展示。
-        """
-        # 搜索时临时覆盖 cityId
-        result = await self._request(
+        """搜索公交线路，并为各方向生成说明文字。"""
+        data = await self._request(
             EP_SEARCH_LINES,
             {
                 "cityId": city_id,
@@ -208,32 +144,29 @@ class ChelaileApiClient:
                 "supportPhyStn": "true",
             },
         )
-        lines = (result or {}).get("result", {}).get("lines", []) or []
-        out = []
-        for line in lines:
-            if line.get("subwayV2") == 1:
-                continue
+        result = data.get("result") or {}
+        lines = []
+        for line in result.get("lines") or []:
             name = line.get("name") or ""
-            # 只保留名字里包含关键词的(避免"7"匹配到"71")
-            if keyword not in name:
+            if str(line.get("subwayV2")) == "1" or keyword not in name:
                 continue
-            line = dict(line)
-            line["caption"] = "{}({} -> {})".format(
-                name, line.get("startSn", ""), line.get("endSn", "")
+            lines.append(
+                {
+                    **line,
+                    "caption": (
+                        f"{name} ({line.get('startSn', '')} → {line.get('endSn', '')})"
+                    ),
+                }
             )
-            out.append(line)
-        if not out:
-            raise ChelaileNotFoundError(f"未找到线路号 {keyword} 的公交线路")
-        return out
+        if not lines:
+            raise ChelaileNotFoundError(f"No bus lines found for {keyword}")
+        return lines
 
-    async def async_get_line_detail(
+    async def async_get_line_stations(
         self, city_id: str, line_id: str
-    ) -> dict[str, Any]:
-        """获取线路详情:首末班/票价/站点列表/当前车辆。
-
-        返回 {line: {...}, stations: [...], buses: [...], otherlines: [...]}
-        """
-        return await self._request(
+    ) -> list[dict[str, Any]]:
+        """按行驶顺序返回线路站点。"""
+        data = await self._request(
             EP_LINE_DETAIL,
             {
                 "cityId": city_id,
@@ -245,56 +178,19 @@ class ChelaileApiClient:
                 "geo_lng": "",
             },
         )
-
-    async def async_get_line_stations(
-        self, city_id: str, line_id: str
-    ) -> list[dict[str, Any]]:
-        """获取线路所有站点,归一化为 [{station_id, order, name, lat, lng}]。"""
-        data = await self.async_get_line_detail(city_id, line_id)
-        stations = []
-        for s in data.get("stations", []) or []:
-            stations.append(
-                {
-                    "station_id": s.get("sId"),
-                    "order": s.get("order"),
-                    "name": s.get("sn"),
-                    "lat": s.get("wgsLat"),
-                    "lng": s.get("wgsLng"),
-                    "physical_st_id": s.get("physicalStId"),
-                    "namesake_st_id": s.get("namesakeStId"),
-                }
-            )
-        if not stations:
-            raise ChelaileNotFoundError(f"线路 {line_id} 未返回站点列表")
-        return stations
-
-    async def async_get_stop_detail(
-        self,
-        city_id: str,
-        physical_station_id: str,
-        namesake_station_id: str = "",
-        first_line_id: str = "",
-        lat: str = "",
-        lng: str = "",
-    ) -> dict[str, Any]:
-        """获取站点详情(经过该站的所有线路)。"""
-        return await self._request(
-            EP_STOP_DETAIL,
+        stations = [
             {
-                "cityId": city_id,
-                "localCityId": city_id,
-                "physicalStId": physical_station_id,
-                "namesakeStId": namesake_station_id,
-                "firstLineId": first_line_id,
-                "stationId": "",
-                "lat": lat,
-                "lng": lng,
-                "geo_lat": lat,
-                "geo_lng": lng,
-                "actionState": "1",
-                "permission": "0",
-            },
-        )
+                "station_id": station["sId"],
+                "order": station["order"],
+                "name": station["sn"],
+                "lat": station.get("wgsLat"),
+                "lng": station.get("wgsLng"),
+            }
+            for station in data.get("stations") or []
+        ]
+        if not stations:
+            raise ChelaileNotFoundError(f"No stations found for line {line_id}")
+        return stations
 
     async def async_get_realtime(
         self,
@@ -304,26 +200,19 @@ class ChelaileApiClient:
         station_id: str,
         lat: str = "",
         lng: str = "",
-    ) -> list[dict[str, Any]]:
-        """获取指定(线路,站点)的实时到站信息。
-
-        返回最近若干辆车(按离站距离倒序,最近在前),每辆含:
-            bus_id, order(当前站序), distance_to_wait(米),
-            stops_away(还有几站), travel_time(秒), arrival_time(ms ts),
-            capacity(0/1/2), licence, speed
-        """
-        target_order = str(target_order)
+    ) -> list[Bus]:
+        """按距离由近到远返回最多三辆驶向目标站点的公交车。"""
         data = await self._request(
             EP_BUS_DETAIL,
             {
+                "cityId": city_id,
+                "localCityId": city_id,
                 "cshow": "busDetail",
                 "specail": "0",
                 "specialType": "undefined",
-                "cityId": city_id,
-                "localCityId": city_id,
                 "lineId": line_id,
-                "targetOrder": target_order,
-                "specialTargetOrder": target_order,
+                "targetOrder": str(target_order),
+                "specialTargetOrder": str(target_order),
                 "stationId": station_id,
                 "lat": lat,
                 "lng": lng,
@@ -336,33 +225,54 @@ class ChelaileApiClient:
                 "secret": "",
             },
         )
-        buses = data.get("buses", []) or []
-        # 仅保留朝向目标站的车(distanceToWaitStn >= 0)
-        approaching = [b for b in buses if b.get("distanceToWaitStn", -1) >= 0]
-        # order 越大越接近目标站(因为 order 是车辆当前站序,目标站序固定)
-        approaching.sort(key=lambda b: b.get("order", 0), reverse=True)
-
-        out = []
-        try:
-            target_order_int = int(target_order)
-        except (TypeError, ValueError):
-            target_order_int = 0
-
-        for bus in approaching[:3]:
-            travels = bus.get("travels") or [{}]
-            travel = travels[0] if travels else {}
-            order = bus.get("order", 0)
-            out.append(
+        if not isinstance(data.get("buses"), list):
+            raise ChelaileError("Invalid bus list")
+        buses: list[Bus] = []
+        for bus in data["buses"]:
+            distance = _number(bus.get("distanceToWaitStn"))
+            if distance is None:
+                raise ChelaileError("Invalid bus distance")
+            if distance < 0:
+                continue
+            travel = (bus.get("travels") or [{}])[0]
+            seconds = _number(travel.get("travelTime"))
+            travel_time = (
+                math.ceil(seconds) if seconds is not None and seconds >= 0 else None
+            )
+            order = _number(bus.get("order"))
+            speed = _number(bus.get("speed"))
+            timestamp = _number(travel.get("arrivalTime"))
+            arrival_time = None
+            if timestamp is not None and timestamp > 0:
+                try:
+                    arrival_time = datetime.fromtimestamp(
+                        timestamp / 1000, UTC
+                    ).isoformat()
+                except (OverflowError, OSError, ValueError):
+                    pass
+            buses.append(
                 {
-                    "bus_id": bus.get("busId"),
-                    "order": order,
-                    "stops_away": target_order_int - order if order else None,
-                    "distance_to_wait": bus.get("distanceToWaitStn"),
-                    "travel_time": travel.get("travelTime"),
-                    "arrival_time": travel.get("arrivalTime"),
-                    "capacity": bus.get("capacity", 0),
-                    "licence": bus.get("licence"),
-                    "speed": bus.get("speed"),
+                    "bus_id": (
+                        str(bus["busId"]) if bus.get("busId") is not None else None
+                    ),
+                    "license_plate": bus.get("licence") or None,
+                    "speed_kmh": speed if speed is not None and speed >= 0 else None,
+                    "order": (int(order) if order is not None and order >= 0 else None),
+                    "travel_time_seconds": travel_time,
+                    "eta_minutes": (
+                        math.ceil(travel_time / 60) if travel_time is not None else None
+                    ),
+                    "arrival_time": arrival_time,
+                    "distance_m": distance,
+                    "stops_away": (
+                        max(0, int(target_order) - int(order))
+                        if order is not None and order >= 0
+                        else None
+                    ),
+                    "capacity": {0: "empty", 1: "moderate", 2: "crowded"}.get(
+                        _number(bus.get("capacity"))
+                    ),
                 }
             )
-        return out
+        buses.sort(key=lambda bus: bus["distance_m"])
+        return buses[:3]

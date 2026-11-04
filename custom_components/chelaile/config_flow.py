@@ -1,369 +1,232 @@
-"""车来了集成配置流程.
-
-分步(每步职责单一,避免单步承担多职责导致前端卡顿):
-1. user:      选城市(从 /wwd/ncitylist 拉取下拉)
-2. line:      输入线路号 -> 搜索得到各方向
-3. direction: 选方向(若该线路号仅一个方向则自动跳过)
-4. stop:      选目标站点 -> 创建 entry
-"""
+"""车来了集成的配置流程与选项流程。"""
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-import voluptuous as vol
-from homeassistant import config_entries
-from homeassistant.config_entries import ConfigEntry, ConfigFlowResult
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.data_entry_flow import FlowResult
-
-from .api import ChelaileApiClient
-from .const import (
-    CONF_CITY_ID,
-    CONF_CITY_NAME,
-    CONF_DIRECTION,
-    CONF_END_SN,
-    CONF_LAT,
-    CONF_LINE_ID,
-    CONF_LINE_NAME,
-    CONF_LINE_NO,
-    CONF_LNG,
-    CONF_SCAN_INTERVAL,
-    CONF_STATION_ID,
-    CONF_STATION_NAME,
-    CONF_START_SN,
-    CONF_TARGET_ORDER,
-    DEFAULT_CITY_ID,
-    DEFAULT_SCAN_INTERVAL,
-    DOMAIN,
-    STEP_DIRECTION,
-    STEP_LINE,
-    STEP_STOP,
-    STEP_USER,
+import probatio
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
 )
-from .exceptions import ChelaileAuthError, ChelaileError, ChelaileNotFoundError
+from homeassistant.const import CONF_SCAN_INTERVAL
+from homeassistant.core import callback
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
-_LOGGER = logging.getLogger(__name__)
-
-
-async def _get_api(hass: HomeAssistant) -> ChelaileApiClient:
-    """构造一个临时 API 客户端(config_flow 期间短生命周期,独立 session)。"""
-    from homeassistant.helpers.aiohttp_client import async_get_clientsession
-    
-    session = async_get_clientsession(hass)
-    return ChelaileApiClient(session)
-
-
-async def _validate_get_cities(hass: HomeAssistant) -> list[dict[str, Any]]:
-    """获取城市列表，返回 [{cityId, cityName, ...}]。失败抛异常。"""
-    api = await _get_api(hass)
-    try:
-        return await api.async_get_cities()
-    finally:
-        pass  # HA 自动管理 session
+from .api import ChelaileApiClient, ChelaileError, ChelaileNotFoundError
+from .const import DEFAULT_SCAN_INTERVAL, DOMAIN, MAX_SCAN_INTERVAL, MIN_SCAN_INTERVAL
 
 
-async def _validate_search_lines(
-    hass: HomeAssistant, city_id: str, keyword: str
-) -> list[dict[str, Any]]:
-    api = await _get_api(hass)
-    try:
-        return await api.async_search_lines(city_id, keyword)
-    finally:
-        pass  # HA 自动管理 session
+class ChelaileConfigFlow(ConfigFlow, domain=DOMAIN):
+    """选择城市、线路、方向和站点。"""
 
-
-async def _validate_get_line_stations(
-    hass: HomeAssistant, city_id: str, line_id: str
-) -> list[dict[str, Any]]:
-    api = await _get_api(hass)
-    try:
-        return await api.async_get_line_stations(city_id, line_id)
-    finally:
-        pass  # HA 自动管理 session
-
-
-def _city_options(cities: list[dict[str, Any]]) -> dict[str, str]:
-    """构造城市下拉选项 {cityId: "cityName"}。热门在前。"""
-    sorted_cities = sorted(
-        cities,
-        key=lambda c: (not c.get("isHot"), c.get("pinyin") or c.get("cityName") or ""),
-    )
-    return {str(c.get("cityId", "")): str(c.get("cityName", "")) for c in sorted_cities}
-
-
-class ChelaileConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """车来了集成配置流程。"""
-
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self) -> None:
-        """初始化流程状态。"""
-        self._cities: list[dict[str, Any]] = []
-        self._lines: list[dict[str, Any]] = []
+        self._cities: dict[str, str] = {}
+        self._lines: dict[str, dict[str, Any]] = {}
+        self._line: dict[str, Any] = {}
         self._stations: list[dict[str, Any]] = []
-        self._selected_city_id: str = ""
-        self._selected_city_name: str = ""
-        self._line_no: str = ""
-        self._selected_line: dict[str, Any] = {}
-        self._entry_data: dict[str, Any] = {}
+        self._data: dict[str, Any] = {}
 
-    # ---------- 第 1 步：选城市 ----------
-    
+    @property
+    def _api(self) -> ChelaileApiClient:
+        return ChelaileApiClient(async_get_clientsession(self.hass))
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """选城市。"""
+        """选择城市，或重试加载城市列表。"""
         errors: dict[str, str] = {}
-
         if not self._cities:
             try:
-                self._cities = await _validate_get_cities(self.hass)
-            except ChelaileError as err:
-                _LOGGER.error("获取城市列表失败: %s", err)
-                errors["base"] = "cannot_connect"
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.error("获取城市列表异常: %s", err)
-                errors["base"] = "unknown"
-
-        if user_input is not None and not errors:
-            city_id = user_input.get(CONF_CITY_ID)
-            if not city_id:
-                errors[CONF_CITY_ID] = "select_city"
-            else:
-                self._selected_city_id = city_id
-                self._selected_city_name = next(
-                    (
-                        str(c.get("cityName", ""))
-                        for c in self._cities
-                        if str(c.get("cityId")) == city_id
-                    ),
-                    "",
-                )
-                return await self.async_step_line()
-
-        city_options = _city_options(self._cities) if self._cities else {}
-        default_city = DEFAULT_CITY_ID if DEFAULT_CITY_ID in city_options else next(
-            iter(city_options), ""
-        )
-
-        return self.async_show_form(
-            step_id=STEP_USER,
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_CITY_ID, default=default_city): vol.In(city_options),
+                cities = await self._api.async_get_cities()
+                self._cities = {
+                    str(city["cityId"]): city["cityName"]
+                    for city in sorted(
+                        cities,
+                        key=lambda city: city.get("pinyin") or city["cityName"],
+                    )
                 }
-            ),
-            errors=errors,
-            description_placeholders={"city_count": str(len(city_options))},
-        )
+            except ChelaileNotFoundError:
+                errors["base"] = "no_cities"
+            except ChelaileError:
+                errors["base"] = "cannot_connect"
 
-    # ---------- 第2步:输入线路号 ----------
+        if user_input and self._cities:
+            city_id = user_input["city_id"]
+            self._data = {"city_id": city_id, "city_name": self._cities[city_id]}
+            return await self.async_step_line()
+
+        schema = {}
+        if self._cities:
+            schema[probatio.Required("city_id")] = SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        {"value": city_id, "label": name}
+                        for city_id, name in self._cities.items()
+                    ],
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            )
+        return self.async_show_form(
+            step_id="user", data_schema=probatio.Schema(schema), errors=errors
+        )
 
     async def async_step_line(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """输入线路号,搜索后跳到方向选择。"""
+        """搜索公交线路。"""
         errors: dict[str, str] = {}
-
         if user_input is not None:
-            line_no = (user_input.get(CONF_LINE_NO) or "").strip()
-            if not line_no:
-                errors[CONF_LINE_NO] = "line_no_required"
+            keyword = user_input["line_no"].strip()
+            if not keyword:
+                errors["line_no"] = "line_no_required"
             else:
                 try:
-                    self._lines = await _validate_search_lines(
-                        self.hass, self._selected_city_id, line_no
+                    lines = await self._api.async_search_lines(
+                        self._data["city_id"], keyword
                     )
-                    self._line_no = line_no
-                    # 单方向直接选中并进入站点步;多方向进入方向选择步
-                    if len(self._lines) == 1:
-                        return await self._go_to_stop(self._lines[0])
-                    return await self.async_step_direction()
                 except ChelaileNotFoundError:
-                    errors[CONF_LINE_NO] = "line_not_found"
-                except ChelaileAuthError:
-                    errors["base"] = "auth_failed"
-                    # 需要用户重新配置
-                except ChelaileError as err:
-                    _LOGGER.error("搜索线路失败: %s", err)
+                    errors["line_no"] = "line_not_found"
+                except ChelaileError:
                     errors["base"] = "cannot_connect"
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.error("搜索线路异常: %s", err)
-                    errors["base"] = "unknown"
+                else:
+                    self._lines = {str(line["lineId"]): line for line in lines}
+                    if len(self._lines) == 1:
+                        self._line = next(iter(self._lines.values()))
+                        return await self.async_step_stop()
+                    return await self.async_step_direction()
 
         return self.async_show_form(
-            step_id=STEP_LINE,
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_LINE_NO, default=self._line_no): str,
-                }
+            step_id="line",
+            data_schema=self.add_suggested_values_to_schema(
+                probatio.Schema({probatio.Required("line_no"): str}), user_input
             ),
             errors=errors,
-            description_placeholders={"city_name": self._selected_city_name},
+            description_placeholders={"city_name": self._data["city_name"]},
         )
-
-    # ---------- 第3步:选方向 ----------
 
     async def async_step_direction(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """选择线路方向(上/下行)。"""
-        errors: dict[str, str] = {}
-
-        if not self._lines:
-            # 没有搜索结果,回到上一步
-            return await self.async_step_line()
-
+        """选择线路方向。"""
         if user_input is not None:
-            line_id = user_input.get(CONF_LINE_ID)
-            selected = next(
-                (l for l in self._lines if l.get("lineId") == line_id), None
-            )
-            if selected:
-                return await self._go_to_stop(selected)
-            errors[CONF_LINE_ID] = "select_direction"
-
-        direction_options = {
-            l["lineId"]: l.get("caption", l.get("name", ""))
-            for l in self._lines
-        }
+            self._line = self._lines[user_input["line_id"]]
+            self._stations = []
+            return await self.async_step_stop()
 
         return self.async_show_form(
-            step_id=STEP_DIRECTION,
-            data_schema=vol.Schema(
+            step_id="direction",
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_LINE_ID): vol.In(direction_options),
+                    probatio.Required("line_id"): probatio.In(
+                        {
+                            line_id: line["caption"]
+                            for line_id, line in self._lines.items()
+                        }
+                    )
                 }
             ),
-            errors=errors,
-            description_placeholders={"line_no": self._line_no},
         )
-
-    # ---------- 第4步:选站点 ----------
-
-    async def _go_to_stop(self, line: dict[str, Any]) -> ConfigFlowResult:
-        """记录选中线路,拉取站点,进入站点选择步。"""
-        self._selected_line = line
-        try:
-            self._stations = await _validate_get_line_stations(
-                self.hass, self._selected_city_id, line["lineId"]
-            )
-        except ChelaileNotFoundError:
-            return self.async_show_form(
-                step_id=STEP_DIRECTION,
-                errors={"base": "no_stations"},
-            )
-        except ChelaileError as err:
-            _LOGGER.error("获取站点失败: %s", err)
-            return self.async_show_form(
-                step_id=STEP_DIRECTION,
-                errors={"base": "cannot_connect"},
-            )
-        return await self.async_step_stop()
 
     async def async_step_stop(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """选目标站点,然后创建 entry。"""
+        """选择站点，或重试加载已选线路的站点。"""
         errors: dict[str, str] = {}
-
         if not self._stations:
-            return await self.async_step_direction()
-
-        if user_input is not None:
-            station_key = user_input.get(CONF_STATION_ID)
-            selected = None
-            for s in self._stations:
-                key = f"{s['order']}:{s['station_id']}"
-                if key == station_key:
-                    selected = s
-                    break
-            if selected:
-                line = self._selected_line
-                return self.async_create_entry(
-                    title=f"{line.get('name', '')} {selected['name']}",
-                    data={
-                        CONF_CITY_ID: self._selected_city_id,
-                        CONF_CITY_NAME: self._selected_city_name,
-                        CONF_LINE_NO: self._line_no,
-                        CONF_LINE_ID: line.get("lineId"),
-                        CONF_LINE_NAME: line.get("name"),
-                        CONF_DIRECTION: line.get("direction"),
-                        CONF_START_SN: line.get("startSn"),
-                        CONF_END_SN: line.get("endSn"),
-                        CONF_TARGET_ORDER: selected["order"],
-                        CONF_STATION_ID: selected["station_id"],
-                        CONF_STATION_NAME: selected["name"],
-                        CONF_LAT: selected.get("lat"),
-                        CONF_LNG: selected.get("lng"),
-                    },
+            try:
+                self._stations = await self._api.async_get_line_stations(
+                    self._data["city_id"], str(self._line["lineId"])
                 )
-            errors[CONF_STATION_ID] = "select_station"
+            except ChelaileNotFoundError:
+                errors["base"] = "no_stations"
+            except ChelaileError:
+                errors["base"] = "cannot_connect"
 
-        station_options = {
-            f"{s['order']}:{s['station_id']}": f"{s['order']}. {s['name']}"
-            for s in self._stations
+        stations = {
+            f"{station['order']}:{station['station_id']}": station
+            for station in self._stations
         }
+        if user_input and stations:
+            station = stations[user_input["station_id"]]
+            data = {
+                **self._data,
+                "line_id": str(self._line["lineId"]),
+                "line_name": self._line["name"],
+                "direction": (
+                    f"{self._line.get('startSn', '')} → {self._line.get('endSn', '')}"
+                ),
+                "station_id": str(station["station_id"]),
+                "station_name": station["name"],
+                "target_order": station["order"],
+                "lat": "" if station["lat"] is None else str(station["lat"]),
+                "lng": "" if station["lng"] is None else str(station["lng"]),
+            }
+            await self.async_set_unique_id(
+                ":".join(
+                    str(data[key])
+                    for key in ("city_id", "line_id", "station_id", "target_order")
+                )
+            )
+            self._abort_if_unique_id_configured()
+            return self.async_create_entry(
+                title=f"{data['line_name']} · {data['station_name']}", data=data
+            )
 
-        return self.async_show_form(
-            step_id=STEP_STOP,
-            data_schema=vol.Schema(
+        schema = {}
+        if stations:
+            schema[probatio.Required("station_id")] = probatio.In(
                 {
-                    vol.Required(CONF_STATION_ID): vol.In(station_options),
+                    key: f"{station['order']}. {station['name']}"
+                    for key, station in stations.items()
                 }
-            ),
+            )
+        return self.async_show_form(
+            step_id="stop",
+            data_schema=probatio.Schema(schema),
             errors=errors,
-            description_placeholders={
-                "line_name": self._selected_line.get("name", ""),
-                "direction": str(self._selected_line.get("direction", "")),
-            },
+            description_placeholders={"line_name": self._line["name"]},
+            last_step=bool(stations),
         )
 
     @staticmethod
     @callback
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> "ChelaileOptionsFlow":
-        """返回 options flow。"""
+    def async_get_options_flow(config_entry: ConfigEntry) -> ChelaileOptionsFlow:
+        """创建选项流程。"""
         return ChelaileOptionsFlow()
 
-    async def async_step_reauth(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """重配流程：遇到版本无效时让用户重新选择城市/线路。"""
-        if user_input is not None:
-            pass
-        # 直接跳到城市选择步
-        return await self.async_step_user(user_input)
 
-
-class ChelaileOptionsFlow(config_entries.OptionsFlow):
-    """选项流：可调轮询间隔。"""
+class ChelaileOptionsFlow(OptionsFlowWithReload):
+    """配置轮询间隔。"""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """管理选项。"""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            return self.async_create_entry(data=user_input)
 
-        current = self.config_entry.options.get(
-            CONF_SCAN_INTERVAL, int(DEFAULT_SCAN_INTERVAL.total_seconds())
-        )
-        
-        # 显示建议值
-        description = "调整轮询间隔 (秒)。推荐 30-300 秒，太短可能被 API 限制。"
-        
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Optional(CONF_SCAN_INTERVAL, default=int(current)): vol.All(
-                        vol.Coerce(int), vol.Range(min=10, max=900)
-                    ),
+                    probatio.Required(
+                        CONF_SCAN_INTERVAL,
+                        default=self.config_entry.options.get(
+                            CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                        ),
+                    ): probatio.All(
+                        probatio.Coerce(int),
+                        probatio.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL),
+                    )
                 }
             ),
-            description=description,
         )
