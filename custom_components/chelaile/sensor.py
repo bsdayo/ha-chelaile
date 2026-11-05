@@ -1,4 +1,4 @@
-"""最近三辆公交车各自的剩余到站时间。"""
+"""最近三辆公交车的剩余到站时间及文本汇总。"""
 
 from typing import Any
 
@@ -19,8 +19,13 @@ async def async_setup_entry(
     entry: ChelaileConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """为最近三辆车分别添加固定顺位的到站时间传感器。"""
-    async_add_entities(ChelaileETASensor(entry, index) for index in range(3))
+    """添加最近三辆车的到站时间传感器及文本汇总。"""
+    async_add_entities(
+        [
+            *(ChelaileETASensor(entry, index) for index in range(3)),
+            ChelaileETASummarySensor(entry),
+        ]
+    )
 
 
 class ChelaileETASensor(ChelaileEntity, SensorEntity):
@@ -59,3 +64,26 @@ class ChelaileETASensor(ChelaileEntity, SensorEntity):
         """提供当前车辆的详细信息及本次查询的车辆数量。"""
         buses = self.coordinator.data or []
         return {"bus_count": len(buses), **(self.bus or {})}
+
+
+class ChelaileETASummarySensor(ChelaileEntity, SensorEntity):
+    """按固定顺位拼接最近三辆车的剩余分钟数。"""
+
+    _attr_translation_key = "eta_summary"
+    _attr_icon = "mdi:bus-clock"
+
+    def __init__(self, entry: ChelaileConfigEntry) -> None:
+        super().__init__(entry)
+        self._attr_unique_id = f"{entry.unique_id}_eta_summary"
+
+    @property
+    def native_value(self) -> str | None:  # ty: ignore[invalid-property-type-override]
+        """以间隔点拼接时间，保留未知位置；全部未知时返回 None。"""
+        buses = self.coordinator.data or []
+        values = [
+            buses[index]["eta_minutes"] if index < len(buses) else None
+            for index in range(3)
+        ]
+        if all(value is None for value in values):
+            return None
+        return " · ".join("—" if value is None else f"{value}m" for value in values)

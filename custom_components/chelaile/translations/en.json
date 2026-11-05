@@ -56,6 +56,9 @@
     "sensor": {
       "eta": {
         "name": "Bus {position} arrival time"
+      },
+      "eta_summary": {
+        "name": "Arrival times summary"
       }
     }
   }

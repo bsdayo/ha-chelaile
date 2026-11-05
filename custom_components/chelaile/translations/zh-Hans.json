@@ -56,6 +56,9 @@
     "sensor": {
       "eta": {
         "name": "第 {position} 辆车到站时间"
+      },
+      "eta_summary": {
+        "name": "到站时间汇总"
       }
     }
   }
